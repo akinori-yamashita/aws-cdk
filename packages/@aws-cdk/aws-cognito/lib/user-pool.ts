@@ -1,6 +1,6 @@
 import * as iam from '@aws-cdk/aws-iam';
 import * as lambda from '@aws-cdk/aws-lambda';
-import { Construct, IResource, Lazy, Resource } from '@aws-cdk/core';
+import { Construct, Duration, IResource, Lazy, Resource } from '@aws-cdk/core';
 import { CfnUserPool } from './cognito.generated';
 
 /**
@@ -212,6 +212,96 @@ export interface UserPoolTriggers {
   [trigger: string]: lambda.IFunction | undefined;
 }
 
+/**
+ * The email verification style
+ */
+export enum VerificationEmailStyle {
+  /** Verify email via code */
+  CODE = 'CONFIRM_WITH_CODE',
+  /** Verify email via link */
+  LINK = 'CONFIRM_WITH_LINK',
+}
+
+/**
+ * User pool configuration for user self sign up.
+ */
+export interface SelfSignUpConfig {
+  /**
+   * Whether email verification should be enabled.
+   * @default true
+   */
+  readonly verificationEmailEnabled?: boolean;
+
+  /**
+   * The email subject template for the verification email sent to the user upon sign up.
+   * See https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pool-settings-message-templates.html to
+   * learn more about message templates.
+   * @default 'Verify your new account'
+   */
+  readonly verificationEmailSubject?: string;
+
+  /**
+   * The email body template for the verification email sent to the user upon sign up.
+   * See https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pool-settings-message-templates.html to
+   * learn more about message templates.
+   * @default 'Hello {username}, Your verification code is {####}'
+   */
+  readonly verificationEmailBody?: string;
+
+  /**
+   * Emails can be verified either using a code or a link.
+   * @default VerificationEmailStyle.CODE
+   */
+  readonly verificationEmailStyle?: VerificationEmailStyle;
+
+  /**
+   * Whether SMS verification should be enabled.
+   * @default false
+   */
+  readonly verificationSmsEnabled?: boolean;
+
+  /**
+   * The message template for the verification SMS sent to the user upon sign up.
+   * See https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pool-settings-message-templates.html to
+   * learn more about message templates.
+   * @default 'The verification code to your new account is {####}'
+   */
+  readonly verificationSmsMessage?: string;
+}
+
+/**
+ * User pool configuration when administrators sign users up.
+ */
+export interface AdminSignUpConfig {
+  /**
+   * The duration for which the temporary password is valid.
+   * If the user does not confirm sign up by this time, the account has to be reset.
+   * @default Duration.days(7)
+   */
+  readonly tempPasswordValidity?: Duration;
+
+  /**
+   * The template to the email subject that is sent to the user when an administrator signs them up to the user pool.
+   * @default 'Your temporary password'
+   */
+  readonly invitationEmailSubject?: string;
+
+  /**
+   * The template to the email body that is sent to the user when an administrator signs them up to the user pool.
+   * @default 'Your username is {username} and temporary password is {####}.'
+   */
+  readonly invitationEmailBody?: string;
+
+  /**
+   * The template to the SMS message that is sent to the user when an administrator signs them up to the user pool.
+   * @default TODO
+   */
+  readonly invitationSmsMessage?: string;
+}
+
+/**
+ * Props for the UserPool construct
+ */
 export interface UserPoolProps {
   /**
    * Name of the user pool
@@ -219,6 +309,25 @@ export interface UserPoolProps {
    * @default - automatically generated name by CloudFormation at deploy time
    */
   readonly userPoolName?: string;
+
+  /**
+   * Whether self sign up should be enabled. This can be further configured via the `selfSignUp` property.
+   * @default false
+   */
+  readonly selfSignUpEnabled?: boolean;
+
+  /**
+   * Configuration around users signing themselves up to the user pool.
+   * Enable or disable self sign-up via the `selfSignUpEnabled` property.
+   * @default - see defaults in SelfSignUpConfig
+   */
+  readonly selfSignUp?: SelfSignUpConfig;
+
+  /**
+   * Configuration around admins signing up users into a user pool.
+   * @default - see defaults in AdminSignUpConfig
+   */
+  readonly adminSignUp?: AdminSignUpConfig;
 
   /**
    * Method used for user registration & sign in.
@@ -240,7 +349,7 @@ export interface UserPoolProps {
    * Attributes which Cognito will automatically send a verification message to.
    * Must be either EMAIL, PHONE, or both.
    *
-   * @default - No auto verification.
+   * @default EMAIL
    */
   readonly autoVerifiedAttributes?: UserPoolAttribute[];
 
@@ -400,12 +509,52 @@ export class UserPool extends Resource implements IUserPool {
       }
     }
 
+    const emailVerificationSubject = props.selfSignUp?.verificationEmailSubject ?? 'Verify your new account';
+    const emailVerificationMessage = props.selfSignUp?.verificationEmailBody ?? 'Hello {username}, Your verification code is {####}';
+    const smsVerificationMessage = props.selfSignUp?.verificationSmsMessage ?? 'The verification code to your new account is {####}';
+
+    const defaultEmailOption = props.selfSignUp?.verificationEmailStyle ?? VerificationEmailStyle.CODE;
+    const verificationMessageTemplate: CfnUserPool.VerificationMessageTemplateProperty =
+      (defaultEmailOption === VerificationEmailStyle.CODE) ? {
+        defaultEmailOption,
+        emailMessage: emailVerificationMessage,
+        emailSubject: emailVerificationSubject,
+        smsMessage: smsVerificationMessage,
+      } : {
+        defaultEmailOption,
+        emailMessageByLink: emailVerificationMessage,
+        emailSubjectByLink: emailVerificationSubject,
+        smsMessage: smsVerificationMessage
+      };
+
+    const inviteMessageTemplate: CfnUserPool.InviteMessageTemplateProperty = {
+      emailMessage: props.adminSignUp?.invitationEmailBody,
+      emailSubject: props.adminSignUp?.invitationEmailSubject,
+      smsMessage: props.adminSignUp?.invitationSmsMessage,
+    };
+    const selfSignUpEnabled = props.selfSignUpEnabled !== undefined ? props.selfSignUpEnabled : false;
+    const adminCreateUserConfig: CfnUserPool.AdminCreateUserConfigProperty = {
+      allowAdminCreateUserOnly: !selfSignUpEnabled,
+      inviteMessageTemplate: props.adminSignUp !== undefined ? inviteMessageTemplate : undefined,
+    };
+    const policies: CfnUserPool.PoliciesProperty = {
+      passwordPolicy: {
+        temporaryPasswordValidityDays: props.adminSignUp?.tempPasswordValidity?.toDays(),
+      }
+    };
+
     const userPool = new CfnUserPool(this, 'Resource', {
       userPoolName: props.userPoolName,
       usernameAttributes,
       aliasAttributes,
-      autoVerifiedAttributes: props.autoVerifiedAttributes,
-      lambdaConfig: Lazy.anyValue({ produce: () => this.triggers })
+      autoVerifiedAttributes: props.autoVerifiedAttributes ?? [ UserPoolAttribute.EMAIL ],
+      lambdaConfig: Lazy.anyValue({ produce: () => this.triggers }),
+      adminCreateUserConfig,
+      emailVerificationMessage,
+      emailVerificationSubject,
+      smsVerificationMessage,
+      verificationMessageTemplate,
+      policies,
     });
 
     this.userPoolId = userPool.ref;

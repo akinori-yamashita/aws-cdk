@@ -1,7 +1,8 @@
 import '@aws-cdk/assert/jest';
+import { ABSENT } from '@aws-cdk/assert/lib/assertions/have-resource';
 import * as lambda from '@aws-cdk/aws-lambda';
-import { Stack, Tag } from '@aws-cdk/core';
-import { SignInType, UserPool, UserPoolAttribute } from '../lib';
+import { Duration, Stack, Tag } from '@aws-cdk/core';
+import { SignInType, UserPool, UserPoolAttribute, VerificationEmailStyle } from '../lib';
 
 describe('User Pool', () => {
   test('default setup', () => {
@@ -9,13 +10,78 @@ describe('User Pool', () => {
     const stack = new Stack();
 
     // WHEN
+    new UserPool(stack, 'Pool');
+
+    // THEN
+    expect(stack).toHaveResource('AWS::Cognito::UserPool', {
+      AutoVerifiedAttributes: [ 'email' ],
+      AdminCreateUserConfig: {
+        AllowAdminCreateUserOnly: true,
+        InviteMessageTemplate: ABSENT
+      },
+      EmailVerificationMessage: 'Hello {username}, Your verification code is {####}',
+      EmailVerificationSubject: 'Verify your new account',
+      SmsVerificationMessage: 'The verification code to your new account is {####}',
+      VerificationMessageTemplate: {
+        DefaultEmailOption: 'CONFIRM_WITH_CODE',
+        EmailMessage: 'Hello {username}, Your verification code is {####}',
+        EmailSubject: 'Verify your new account',
+        SmsMessage: 'The verification code to your new account is {####}',
+      }
+    });
+  });
+
+  test('email verification via link is configured correctly', () => {
+    // GIVEN
+    const stack = new Stack();
+
+    // WHEN
     new UserPool(stack, 'Pool', {
-      userPoolName: 'myPool',
+      selfSignUp: {
+        verificationEmailStyle: VerificationEmailStyle.LINK
+      }
     });
 
     // THEN
     expect(stack).toHaveResourceLike('AWS::Cognito::UserPool', {
-      UserPoolName: 'myPool'
+      EmailVerificationMessage: 'Hello {username}, Your verification code is {####}',
+      EmailVerificationSubject: 'Verify your new account',
+      VerificationMessageTemplate: {
+        DefaultEmailOption: 'CONFIRM_WITH_LINK',
+        EmailMessageByLink: 'Hello {username}, Your verification code is {####}',
+        EmailSubjectByLink: 'Verify your new account',
+      }
+    });
+  }),
+
+  test('admin sign up is configured correctly', () => {
+    // GIVEN
+    const stack = new Stack();
+
+    // WHEN
+    new UserPool(stack, 'Pool', {
+      adminSignUp: {
+        tempPasswordValidity: Duration.days(2),
+        invitationEmailBody: 'invitation email body',
+        invitationEmailSubject: 'invitation email subject',
+        invitationSmsMessage: 'invitation sms'
+      }
+    });
+
+    // THEN
+    expect(stack).toHaveResourceLike('AWS::Cognito::UserPool', {
+      Policies: {
+        PasswordPolicy: {
+          TemporaryPasswordValidityDays: 2
+        }
+      },
+      AdminCreateUserConfig: {
+        InviteMessageTemplate: {
+          EmailMessage: 'invitation email body',
+          EmailSubject: 'invitation email subject',
+          SMSMessage: 'invitation sms'
+        }
+      }
     });
   });
 
